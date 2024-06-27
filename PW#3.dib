@@ -42,7 +42,7 @@ using System.Threading;
 class DefiniteIntegral
 {
 
-    private static object _lockObject = new object();
+    // private static object _lockObject = new object();
 
     //
     // a, b - границы отрезка, на котором происходит вычисление опредленного интеграла
@@ -115,3 +115,55 @@ Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
 
 Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+
+#!markdown
+
+# Исследование производительности
+## Выбор оптимального шага
+Необходимо выбрать шаг, который:
+- Обеспечивает достаточную для анализа вычислительную нагрузку;
+- Даёт точность 1е-4;
+- Выполняется в разумное время.
+Методом проб и ошибок было определено, что оптимальным является шаг 1е-3.
+Нам дал интеграл функции sin(x) на отрезке от -100 до 100. Так как функция симметрична относительно начала координат, а область интегрирования симметрична относительно нуля, то интеграл будет равен нулю. Проверим:
+
+#!csharp
+
+DefiniteIntegral.Solve(-100, 100, (x) => Math.Sin(x), 1e-3, 1)
+
+#!markdown
+
+## Исследование производительности многопоточной программы
+Проверим время в наносекундах, необходимое для выполнения вычисления интеграла с разным количеством потоков (от 1 до 20). Для каждого количества потоков будет выполняться тридцать замеров и высчитываться средний.
+
+#!csharp
+
+#r "nuget:ScottPlot, 5.0.*"
+using System.Diagnostics;
+
+using Microsoft.DotNet.Interactive.Formatting;
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+
+Stopwatch stopwatch = new Stopwatch();
+double[] data = new double[20];
+for(int i = 0; i < 20; i++){
+    long average = 0;
+    for(int j = 1; j <= 30; j++){
+        stopwatch.Start();
+        DefiniteIntegral.Solve(-100, 100, (x)=>Math.Sin(x), 1e-6, i+1);
+        stopwatch.Stop();
+        average += stopwatch.ElapsedTicks;
+        stopwatch.Reset();
+    }
+    average /= 30;
+    double nanoseconds = (double)average / Stopwatch.Frequency * 1e9;
+    Console.WriteLine($"{i+1} threads: {nanoseconds:F2}");
+    data[i] = nanoseconds;
+}
+
+double[] t = Enumerable.Range(1, 20).Select(i => (double)i).ToArray();
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(t, data);
+plt
