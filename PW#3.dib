@@ -32,21 +32,72 @@
 
 #!csharp
 
+using System;
+using System.Threading;
+
+
 //
 // Вычисление определенного интеграла
 //
 class DefiniteIntegral
 {
+
+    private static object _lockObject = new object();
+
     //
     // a, b - границы отрезка, на котором происходит вычисление опредленного интеграла
     // function - функция, для которой вычисляется определнный интеграл
     // step - размер одного шага разбиения
     // threadsNumber - число потоков, которые используются для вычислений
     //
+
     public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
     {
-        // отсюда надо начинать реализацию задачи
-        return 0.0;
+        double res = 0;
+        Barrier barrier = new Barrier(threadsnumber + 1);
+        double lengthForThread = (b - a) / (double)threadsnumber;
+        
+        for(int i = 1; i <= threadsnumber; i++){
+            double ai = a + (i-1)*lengthForThread;
+            double bi = a + i*lengthForThread;
+            Thread thread = new Thread(() => {
+                SingleALg(ai , bi, function, step, ref res);
+                barrier.SignalAndWait();
+            });
+            thread.Start();
+        }
+        barrier.SignalAndWait();
+        return res;
+    }
+    
+    static void addDoubleValues(double incrementValue, ref double res) 
+    {
+        //Можно ли так?
+        // lock(_lockObject){
+        //     res += incrementValue;
+        // }
+
+        double newCurrentValue;
+        double currentValue;
+        do
+        {
+            currentValue = res;
+            newCurrentValue = currentValue + incrementValue;
+        }
+        while (Interlocked.CompareExchange(ref res, newCurrentValue, currentValue) != currentValue);
+    }
+
+
+    public static void SingleALg(double a, double b, Func<double, double> function, double step, ref double res){
+        int n = (int)((b - a) / step);
+        double sum = 0.5 * (function(a) + function(b));
+
+        for (int i = 1; i < n; i++)
+        {
+            sum += function(a + i * step);
+        }
+
+        addDoubleValues(step*sum, ref res);
     }
 }
 
@@ -63,4 +114,4 @@ Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
 
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
 
-Assert.Equal(10, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
