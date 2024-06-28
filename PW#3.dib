@@ -129,7 +129,7 @@ Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
 
 #!csharp
 
-DefiniteIntegral.Solve(-100, 100, (x) => Math.Sin(x), 1e-3, 1)
+Math.Abs(DefiniteIntegral.Solve(-100, 100, (x) => Math.Sin(x), 1e-3, 1)) < 1e-4
 
 #!markdown
 
@@ -145,6 +145,7 @@ using Microsoft.DotNet.Interactive.Formatting;
 Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
     w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
 
+#!csharp
 
 Stopwatch stopwatch = new Stopwatch();
 double[] data = new double[20];
@@ -152,18 +153,67 @@ for(int i = 0; i < 20; i++){
     long average = 0;
     for(int j = 1; j <= 30; j++){
         stopwatch.Start();
-        DefiniteIntegral.Solve(-100, 100, (x)=>Math.Sin(x), 1e-6, i+1);
+        DefiniteIntegral.Solve(-100, 100, (x)=>Math.Sin(x), 1e-3, i+1);
         stopwatch.Stop();
         average += stopwatch.ElapsedTicks;
         stopwatch.Reset();
     }
     average /= 30;
     double nanoseconds = (double)average / Stopwatch.Frequency * 1e9;
-    Console.WriteLine($"{i+1} threads: {nanoseconds:F2}");
+    // Console.WriteLine($"{i+1} threads: {nanoseconds:F2}");
     data[i] = nanoseconds;
 }
 
 double[] t = Enumerable.Range(1, 20).Select(i => (double)i).ToArray();
 ScottPlot.Plot plt = new();
 plt.Add.Scatter(t, data);
+double bestSpeed = data.Min();
+double bestThreadNumber = Array.IndexOf(data, bestSpeed);
 plt
+
+#!markdown
+
+## Сравнение с однопоточной программой
+Сравнение будет проводиться с методом DefiniteIntegral.SingleAlg(...). 
+
+#!csharp
+
+Stopwatch stopwatch = new Stopwatch();
+double singleTicks = 0;
+for(int j = 1; j <= 30; j++){
+    stopwatch.Start();
+    DefiniteIntegral.SingleALg(-100, 100, (x)=>Math.Sin(x), 1e-3, ref singleTicks);
+    stopwatch.Stop();
+    singleTicks += stopwatch.ElapsedTicks;
+    stopwatch.Reset();
+}
+singleTicks /= 30;
+double singleThreadSpeed = singleTicks / Stopwatch.Frequency * 1e9;
+Console.WriteLine($"Single thread speed: {singleThreadSpeed}");
+Console.WriteLine($"{bestThreadNumber}-thread speed: {bestSpeed}");
+double precents = ((singleThreadSpeed - bestSpeed) / (singleThreadSpeed / 100));
+Console.WriteLine($"{precents:F2}% faster")
+
+#!markdown
+
+## Summary
+
+#!csharp
+
+Console.WriteLine("Выбранный шаг: 1e-3");
+Console.WriteLine($"Количество потоков, давшиее максимальную скорость: {bestThreadNumber}");
+Console.WriteLine($"Максимальная скорость многопоточной программы (нс): {bestSpeed}");
+Console.WriteLine($"Скорость работы однопоточной программы (нс): {singleThreadSpeed}");
+Console.WriteLine($"Многопоточная версия быстрее однопоточной на: {precents:F2}%");
+
+#!markdown
+
+### Тестовый прогон
+В моём конкретном случае с восьмиядерным процессором цифры получились такие:
+```
+Выбранный шаг: 1e-3
+Количество потоков, давшиее максимальную скорость: 7
+Максимальная скорость многопоточной программы (нс): 1100230.4852022128
+Скорость работы однопоточной программы (нс): 2713266.604600924
+Многопоточная версия быстрее однопоточной на: 59.45%
+```
