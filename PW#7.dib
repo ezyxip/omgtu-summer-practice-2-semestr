@@ -38,3 +38,247 @@ ServerThread может менять свое поведение для обра
 Отсутствие Команд в очереди потока не должно требовать значительных затрат процессорного времени. Значительными считаются затраты, которые зависят от времени простоя потока.
 
 Написать проверку, которая гарантирует правильное выполнение команд HardStop и SoftStop.
+
+#!markdown
+
+# Выполнение
+## Реализация ServerThread
+Этот класс подразуемевает запуск потока, которому можно давать задачи для исполнения. Условие обработки задаётся полем ServerThreadMode mode, которое предоставляет объект, инкапсулирующий логику прекращения работы потока. NormalMode - обработка входящих команд будет выполняться бесконечно, цикл обработки сообщений не прервётся. HardStoppingMode - следующая за текущим команда не будет выполняться, так как цикл обработки команд остановится. SoftStoppingMode - выполнится только столько команд, сколько было в очереди команд на момент создания экземпляра SoftStoppingMode, затем цикл завершит работу. Логика работы HardStop и SoftStop заключается в смене текущего режима работы на необходимый.
+
+#!csharp
+
+using System;
+using System.Threading;
+using System.Collections.Concurrent;
+
+#!csharp
+
+class ServerThread{
+
+    static private long idCounter = 0;
+
+    public bool IsDone{
+        get;
+        private set;
+    } = false;
+
+    public long threadId{
+        get;
+        private set;
+    }
+
+    public string Name{
+        get{
+            return  $"{this.GetHashCode()}:{threadId}";
+        }
+    }
+
+    private BlockingCollection<ICommand> commandQueue = new BlockingCollection<ICommand>();
+    private ServerThreadMode mode = new NormalMode();
+
+    public ServerThread(){
+        threadId = idCounter;
+        Interlocked.Increment(ref idCounter);
+        Thread serverThread = new Thread(() => {
+            while(mode.GetCondition()){
+                ICommand command = commandQueue.Take();
+                command.Execute();
+            }
+            IsDone = true;
+        });
+
+        serverThread.Name = this.Name;
+        serverThread.Start();
+    }
+
+    public void AddCommand(ICommand command){
+        commandQueue.Add(command);
+    }
+    
+    interface ServerThreadMode{
+        bool GetCondition();
+    }
+
+    class NormalMode : ServerThreadMode{
+        public bool GetCondition(){
+            return true;
+        }
+    }
+
+    class HardStoppingMode : ServerThreadMode{
+        public bool GetCondition(){
+            return false;
+        }
+    }
+
+    class SoftStoppingMode : ServerThreadMode{
+        int countOfCommands;
+        public SoftStoppingMode(ServerThread serverThread){
+            countOfCommands = serverThread.commandQueue.Count;
+        }
+
+        public bool GetCondition(){
+            if(countOfCommands == 0) 
+            {
+                return false;
+            }
+            else 
+            {
+                countOfCommands--;
+                return true;
+            }
+        }
+    }
+
+    public class HardStop : ICommand{
+        ServerThread targetThread;
+
+
+        public HardStop(ServerThread serverThread){
+            this.targetThread = serverThread;
+        }
+
+        public void Execute(){
+            if(Thread.CurrentThread.Name != targetThread.Name)
+                throw new Exception("Выполнение команды не в целевом потоке");
+            targetThread.mode = new HardStoppingMode();
+        }
+    }
+
+    public class SoftStop : ICommand{
+        ServerThread targetThread;
+
+
+        public SoftStop(ServerThread serverThread){
+            this.targetThread = serverThread;
+        }
+
+        public void Execute(){
+            if(Thread.CurrentThread.Name != targetThread.Name)
+                throw new Exception("Выполнение команды не в целевом потоке");
+            targetThread.mode = new SoftStoppingMode(targetThread);
+        }
+    }
+}
+
+#!markdown
+
+## Тестирование
+Необходимо проверить, действительно ли команды HardStop и SoftStop выполняют  свою логику. Для этого нагрузим ServerThread тремя разными способами. Но сначала подготовим несколько тестовых команд. Первая - та, которая обеспечит фактическое иполнение команд только после определённого события.
+
+#!csharp
+
+class StartCommand : ICommand{
+
+    ManualResetEvent mre;
+    
+    public StartCommand(ManualResetEvent mre){
+        this.mre = mre;
+    }
+
+    public void Execute(){
+        mre.WaitOne();
+    }
+}
+
+#!markdown
+
+Второе - просто пустая команда, которая позволит нам отслеживать выполнение команд.
+
+#!csharp
+
+    class EmptyCommand : ICommand{
+        public static int counter = 0;
+        public void Execute(){
+            Interlocked.Increment(ref counter);
+        }
+    }
+
+#!markdown
+
+### Тест 1
+Нагрузим очередь команд тридцатью командами, а в середину вставим команду HardStop. Количество выполненых команд должно равняться пянадцати, поток должен завершить свою работу.
+
+#!csharp
+
+ServerThread serverThread = new ServerThread();
+ManualResetEvent mre = new ManualResetEvent(false);
+EmptyCommand.counter = 0;
+
+serverThread.AddCommand(new StartCommand(mre));
+
+for(int i = 0; i < 15; i++)
+{
+    serverThread.AddCommand(new EmptyCommand());
+}
+
+serverThread.AddCommand(new ServerThread.HardStop(serverThread));
+
+for(int i = 0; i < 15; i++)
+{
+    serverThread.AddCommand(new EmptyCommand());
+}
+
+mre.Set();
+
+Thread.Sleep(500);
+
+EmptyCommand.counter == 15 && serverThread.IsDone
+
+#!markdown
+
+### Тест 2
+Нагрузим очередь команд тридцатью командами, а в середину вставим команду SofrStop. Количество выполненых команд должно равняться тридцати, поток должен завершить свою работу.
+
+#!csharp
+
+ServerThread serverThread = new ServerThread();
+ManualResetEvent mre = new ManualResetEvent(false);
+serverThread.AddCommand(new StartCommand(mre));
+EmptyCommand.counter = 0;
+
+
+for(int i = 0; i < 15; i++)
+{
+    serverThread.AddCommand(new EmptyCommand());
+}
+
+serverThread.AddCommand(new ServerThread.SoftStop(serverThread));
+
+for(int i = 0; i < 15; i++)
+{
+    serverThread.AddCommand(new EmptyCommand());
+}
+
+mre.Set();
+Thread.Sleep(500);
+
+EmptyCommand.counter == 30 && serverThread.IsDone
+
+#!markdown
+
+### Тест 3
+Нагрузим очередь команд тридцатью командами, без команды на остановку. Количество выполненых команд должно равняться тридцати, поток не должен завершиться.
+
+#!csharp
+
+ServerThread serverThread = new ServerThread();
+ManualResetEvent mre = new ManualResetEvent(false);
+serverThread.AddCommand(new StartCommand(mre));
+EmptyCommand.counter = 0;
+
+
+for(int i = 0; i < 15; i++)
+{
+    serverThread.AddCommand(new EmptyCommand());
+}
+
+for(int i = 0; i < 15; i++)
+{
+    serverThread.AddCommand(new EmptyCommand());
+}
+
+mre.Set();
+Thread.Sleep(500);
+
+EmptyCommand.counter == 30 && !serverThread.IsDone
