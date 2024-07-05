@@ -37,9 +37,204 @@
 Для этого следует использовать условные события, которые позволят убедиться, что оба потока запустились и готовы читать и писать объекты и только потом запускать таймер.
 2. Для итогового вывода сравнивать усредненные значения.
 
-#!markdown
+#!csharp
 
-// здесь писать код
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Diagnostics;
+
+#!csharp
+
+long[] bcComputingNanoSecondsList = new long[10];
+long[] bcReadAndWriteNanoSecondsList = new long[10];
+
+for(int i = 0; i < 10; i++){
+    BlockingCollection<int> bc = new BlockingCollection<int>();
+
+    Stopwatch bcComputing = new Stopwatch();
+    Stopwatch bcWriteAndRead = new Stopwatch();
+
+    ManualResetEvent mreStart = new ManualResetEvent(false);
+    ManualResetEvent mreFinish = new ManualResetEvent(false);
+
+    Thread bcWrite = new Thread(() => {
+        mreStart.WaitOne();
+        for(int i = 0; i < 1_000_000; i++){
+            bc.Add(i);
+        }
+    });
+
+    Thread bcRead = new Thread(() => {
+        mreStart.WaitOne();
+        bcComputing.Start();
+        for(int i = 0; i < 1_000_000; i++){
+            bc.Take();
+        }
+        bcComputing.Stop();
+        mreFinish.Set();
+    });
+
+    bcWrite.Start();
+    bcRead.Start();
+
+    bcWriteAndRead.Start();
+
+    mreStart.Set();
+    mreFinish.WaitOne();
+
+    bcWriteAndRead.Stop();
+
+
+    long ticks = bcComputing.ElapsedTicks;
+    long bcComputingNanoSeconds = (ticks * 1000000000) / Stopwatch.Frequency;
+
+    ticks = bcWriteAndRead.ElapsedTicks;
+    long bcReadAndWriteNanoSeconds = (ticks * 1000000000) / Stopwatch.Frequency;
+
+    bcComputingNanoSecondsList[i] = bcComputingNanoSeconds;
+    bcReadAndWriteNanoSecondsList[i] = bcReadAndWriteNanoSeconds;
+}
+Console.WriteLine(string.Join(" ", bcComputingNanoSecondsList));
+Console.WriteLine(string.Join(" ", bcReadAndWriteNanoSecondsList));
+
+#!csharp
+
+long[] cqComputingNanoSecondsList = new long[10];
+long[] cqReadAndWriteNanoSecondsList = new long[10];
+
+for(int i = 0; i < 10; i++){
+    ConcurrentQueue<int> cq = new ConcurrentQueue<int>();
+
+    Stopwatch cqComputing = new Stopwatch();
+    Stopwatch cqWriteAndRead = new Stopwatch();
+
+    ManualResetEvent mreStart = new ManualResetEvent(false);
+    ManualResetEvent mreFinish = new ManualResetEvent(false);
+
+    Thread cqWrite = new Thread(() => {
+        mreStart.WaitOne();
+        for(int i = 0; i < 1_000_000; i++){
+            cq.Enqueue(i);
+        }
+    });
+
+    Thread cqRead = new Thread(() => {
+        mreStart.WaitOne();
+        cqComputing.Start();
+        for(int i = 0; i < 1_000_000; i++){
+            int res;
+            while(!cq.TryDequeue(out res));
+        }
+        cqComputing.Stop();
+        mreFinish.Set();
+    });
+
+    cqWrite.Start();
+    cqRead.Start();
+
+    cqWriteAndRead.Start();
+
+    mreStart.Set();
+    mreFinish.WaitOne();
+
+    cqWriteAndRead.Stop();
+
+
+    long ticks = cqComputing.ElapsedTicks;
+    long cqComputingNanoSeconds = (ticks * 1000000000) / Stopwatch.Frequency;
+
+    ticks = cqWriteAndRead.ElapsedTicks;
+    long cqReadAndWriteNanoSeconds = (ticks * 1000000000) / Stopwatch.Frequency;
+
+    cqComputingNanoSecondsList[i] = cqComputingNanoSeconds;
+    cqReadAndWriteNanoSecondsList[i] = cqReadAndWriteNanoSeconds;
+}
+Console.WriteLine(string.Join(" ", cqComputingNanoSecondsList));
+Console.WriteLine(string.Join(" ", cqReadAndWriteNanoSecondsList));
+
+#!csharp
+
+long[] qComputingNanoSecondsList = new long[10];
+long[] qReadAndWriteNanoSecondsList = new long[10];
+
+for(int i = 0; i < 10; i++){
+    Queue<int> q = new Queue<int>();
+
+    Stopwatch qComputing = new Stopwatch();
+    Stopwatch qWriteAndRead = new Stopwatch();
+
+    qWriteAndRead.Start();
+
+    for(int j = 0; j < 1_000_000; j++){
+        q.Enqueue(j);
+    }
+
+    qComputing.Start();
+    for(int j = 0; j < 1_000_000; j++){
+        q.Dequeue();
+    }
+    qComputing.Stop();
+
+    qWriteAndRead.Stop();
+
+
+    long ticks = qComputing.ElapsedTicks;
+    long qComputingNanoSeconds = (ticks * 1000000000) / Stopwatch.Frequency;
+
+    ticks = qWriteAndRead.ElapsedTicks;
+    long qReadAndWriteNanoSeconds = (ticks * 1000000000) / Stopwatch.Frequency;
+
+    qComputingNanoSecondsList[i] = qComputingNanoSeconds;
+    qReadAndWriteNanoSecondsList[i] = qReadAndWriteNanoSeconds;
+}
+Console.WriteLine(string.Join(" ", qComputingNanoSecondsList));
+Console.WriteLine(string.Join(" ", qReadAndWriteNanoSecondsList));
+
+#!csharp
+
+// Install the ScottPlot NuGet package
+#r "nuget:ScottPlot, 5.0.*"
+
+// Setup a custom formatter to display plots as images
+using Microsoft.DotNet.Interactive.Formatting;
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+#!csharp
+
+ScottPlot.Plot plot = new();
+
+Console.WriteLine("Скорость обработки данных");
+
+plot.Add.Scatter(Enumerable.Range(1, 10).ToArray(), bcComputingNanoSecondsList, color : ScottPlot.Color.FromColor(System.Drawing.Color.Red));
+plot.Add.Scatter(Enumerable.Range(1, 10).ToArray(), cqComputingNanoSecondsList, color : ScottPlot.Color.FromColor(System.Drawing.Color.Blue));
+plot.Add.Scatter(Enumerable.Range(1, 10).ToArray(), qComputingNanoSecondsList, color : ScottPlot.Color.FromColor(System.Drawing.Color.Green));
+plot
+
+#!csharp
+
+ScottPlot.Plot plot = new();
+
+Console.WriteLine("Скорость записи и чтения данных");
+
+plot.Add.Scatter(Enumerable.Range(1, 10).ToArray(), bcReadAndWriteNanoSecondsList, color : ScottPlot.Color.FromColor(System.Drawing.Color.Red));
+plot.Add.Scatter(Enumerable.Range(1, 10).ToArray(), cqReadAndWriteNanoSecondsList, color : ScottPlot.Color.FromColor(System.Drawing.Color.Blue));
+plot.Add.Scatter(Enumerable.Range(1, 10).ToArray(), qReadAndWriteNanoSecondsList, color : ScottPlot.Color.FromColor(System.Drawing.Color.Green));
+
+plot
+
+#!csharp
+
+double bcAverageComputing = bcComputingNanoSecondsList.Average();
+double cqAverageComputing = cqComputingNanoSecondsList.Average();
+double qAverageComputing = qComputingNanoSecondsList.Average();
+
+double bcPrecents = bcAverageComputing / (qAverageComputing / 100);
+double cqPrecents = cqAverageComputing / (qAverageComputing / 100);
+
+Console.WriteLine($"BlockingCollection медленнее Queue в: {bcPrecents:F2}%");
+Console.WriteLine($"ConcurrentQueue медленнее Queue в: {cqPrecents:F2}%");
 
 #!markdown
 
