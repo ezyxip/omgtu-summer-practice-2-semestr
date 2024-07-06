@@ -35,9 +35,16 @@
 
 #!csharp
 
+public interface ICommand
+{
+    void Execute();
+}
+
+#!csharp
+
 public interface IScheduler
 {
-    bool HasCommand()
+    bool HasCommand();
     ICommand Select();
     void Add(ICommand cmd);
 }
@@ -55,3 +62,233 @@ public interface IScheduler
 Необходимо учесть этот момент при реализации очереди.
 
 2. Для обепечения справедливости стратегии планировщика в слабом смысле использовать стратегию Round Robbin (циклическую) для определения следующего потока на исполнение.
+
+#!markdown
+
+# Выполнение
+Перенесём реализацию ServerThread
+
+#!csharp
+
+using System;
+using System.Threading;
+using System.Collections.Concurrent;
+
+#!csharp
+
+public interface ILongCommand : ICommand{
+    bool IsDone();
+}
+
+#!csharp
+
+public class Scheduler : IScheduler{
+
+        private BlockingCollection<ICommand> commandQueue = new BlockingCollection<ICommand>();
+        private Queue<ICommand> virtualCommandQueue = new Queue<ICommand>();
+        private bool isVirtualQueue = true;
+
+        public bool HasCommand(){
+            return commandQueue.Count + virtualCommandQueue.Count != 0;
+        }
+
+        void ChangeQueue(){
+            if (virtualCommandQueue.Count == 0 || (!isVirtualQueue && commandQueue.Count != 0)){
+                isVirtualQueue = false;
+            } else {
+                isVirtualQueue = true;
+            }
+        }
+
+        public ICommand Select(){
+            ICommand nextCommand;
+            ChangeQueue();
+            if(isVirtualQueue && virtualCommandQueue.Count != 0){
+                nextCommand = virtualCommandQueue.Dequeue();
+            } else {
+                nextCommand = commandQueue.Take();
+            }
+
+            return nextCommand;
+        }
+
+        public void Add(ICommand cmd){
+            commandQueue.Add(cmd);
+        }
+
+        public void AddLongCommand(ILongCommand longCommand){
+            virtualCommandQueue.Enqueue(longCommand);
+        }
+
+        public int Count{
+            get => commandQueue.Count + virtualCommandQueue.Count;
+        }
+    }
+
+#!csharp
+
+class ServerThread{
+
+    static private long idCounter = 0;
+
+    public bool IsDone{
+        get;
+        private set;
+    } = false;
+
+    public long threadId{
+        get;
+        private set;
+    }
+
+    public string Name{
+        get{
+            return  $"{this.GetHashCode()}:{threadId}";
+        }
+    }
+
+    private Scheduler commandQueue = new Scheduler();
+    private ServerThreadMode mode = new NormalMode();
+
+    public ServerThread(){
+        threadId = idCounter;
+        Interlocked.Increment(ref idCounter);
+        Thread serverThread = new Thread(() => {
+            while(mode.GetCondition()){
+                ICommand command = commandQueue.Select();
+                command.Execute();
+                if(command is ILongCommand && !((ILongCommand)command).IsDone())
+                {
+                    commandQueue.AddLongCommand((ILongCommand)command);
+                }
+            }
+            IsDone = true;
+        });
+
+        serverThread.Name = this.Name;
+        serverThread.Start();
+    }
+
+    public void AddCommand(ICommand command){
+        commandQueue.Add(command);
+    }
+    
+    interface ServerThreadMode{
+        bool GetCondition();
+    }
+
+    class NormalMode : ServerThreadMode{
+        public bool GetCondition(){
+            return true;
+        }
+    }
+
+    class HardStoppingMode : ServerThreadMode{
+        public bool GetCondition(){
+            return false;
+        }
+    }
+
+    class SoftStoppingMode : ServerThreadMode{
+        int countOfCommands;
+        public SoftStoppingMode(ServerThread serverThread){
+            countOfCommands = serverThread.commandQueue.Count;
+        }
+
+        public bool GetCondition(){
+            if(countOfCommands == 0) 
+            {
+                return false;
+            }
+            else 
+            {
+                countOfCommands--;
+                return true;
+            }
+        }
+    }
+
+    public class HardStop : ICommand{
+        ServerThread targetThread;
+
+
+        public HardStop(ServerThread serverThread){
+            this.targetThread = serverThread;
+        }
+
+        public void Execute(){
+            if(Thread.CurrentThread.Name != targetThread.Name)
+                throw new Exception("Выполнение команды не в целевом потоке");
+            targetThread.mode = new HardStoppingMode();
+        }
+    }
+
+    public class SoftStop : ICommand{
+        ServerThread targetThread;
+
+
+        public SoftStop(ServerThread serverThread){
+            this.targetThread = serverThread;
+        }
+
+        public void Execute(){
+            if(Thread.CurrentThread.Name != targetThread.Name)
+                throw new Exception("Выполнение команды не в целевом потоке");
+            targetThread.mode = new SoftStoppingMode(targetThread);
+        }
+    }
+
+    
+    
+}
+
+#!markdown
+
+## Длительная задача
+Реализуем некоторую длительную задачу
+
+#!csharp
+
+class LongCommand : ILongCommand{
+    public int currentJobPart;
+
+    public bool IsDone(){
+        return currentJobPart == 0;
+    }
+
+    public LongCommand(int countOfJobPart){
+        this.currentJobPart = countOfJobPart;
+    }
+
+    public void Execute(){
+        if(currentJobPart == 0)
+            throw new Exception("Job already done");
+        currentJobPart--;
+        // Thread.Sleep(50);
+    }
+}
+
+#!csharp
+
+class EmptyCommand : ICommand{
+    public void Execute(){
+        //
+    }
+}
+
+#!markdown
+
+Выполним длительную задачу
+
+#!csharp
+
+ServerThread st = new ServerThread();
+st.AddCommand(new EmptyCommand());
+st.AddCommand(new EmptyCommand());
+st.AddCommand(new EmptyCommand());
+LongCommand comm = new LongCommand(5);
+st.AddCommand(comm);
+
+Thread.Sleep(2000);
+
+comm.currentJobPart
