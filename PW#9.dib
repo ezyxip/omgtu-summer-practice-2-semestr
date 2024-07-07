@@ -26,16 +26,266 @@ interface ICommand
 }
 
 
-public class TestCommand(int id) : ICommand
+class TestCommand(int id) : ICommand
 {
-    int counter = 0;
+    public int counter = 0;
 
     public void Execute()
     {
-        Console.WriteLine($"Поток {id} вызов {++counter}");
+        //У меня при попытке множественного вывода из неосновного потока Polyglot зависает, а потом падает как расширение с внутренней ошибкой.
+        // Console.WriteLine($"Поток {id} вызов {++counter}");
+        counter++;
     }
 }
 
 #!markdown
 
 Необходимо проиллюстрировать выполнение 5 экземпляров TestCommand 3 раза, затем остановить поток с помощью HardStop.
+
+#!markdown
+
+# Реализация
+Перенесм наработки из предыдущих практических работ
+
+#!csharp
+
+using System;
+using System.Threading;
+using System.Collections.Concurrent;
+
+interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
+
+interface ILongCommand : ICommand{
+    bool IsDone();
+}
+
+class Scheduler : IScheduler{
+
+    private BlockingCollection<ICommand> commandQueue = new BlockingCollection<ICommand>();
+    private Queue<ICommand> virtualCommandQueue = new Queue<ICommand>();
+    private bool isVirtualQueue = true;
+
+    public bool HasCommand(){
+        return commandQueue.Count + virtualCommandQueue.Count != 0;
+    }
+
+    void ChangeQueue(){
+        if(
+            (isVirtualQueue && commandQueue.Count != 0)
+            || (!isVirtualQueue && virtualCommandQueue.Count == 0)
+        ){
+            isVirtualQueue = false;
+        } else {
+            isVirtualQueue = true;
+        }
+    }
+
+    public ICommand Select(){ 
+        ICommand nextCommand;
+        ChangeQueue();
+        if(isVirtualQueue){
+            nextCommand = virtualCommandQueue.Dequeue();
+        } else {
+            nextCommand = commandQueue.Take();
+        }
+
+        return nextCommand;
+    }
+
+    public void Add(ICommand cmd){
+        commandQueue.Add(cmd);
+    }
+
+    public void AddLongCommand(ILongCommand longCommand){
+        virtualCommandQueue.Enqueue(longCommand);
+    }
+
+    public int Count{
+        get => commandQueue.Count + virtualCommandQueue.Count;
+    }
+}
+
+class ServerThread{
+
+    static private long idCounter = 0;
+
+    public bool IsDone{
+        get;
+        private set;
+    } = false;
+
+    public long threadId{
+        get;
+        private set;
+    }
+
+    public string Name{
+        get{
+            return  $"{this.GetHashCode()}:{threadId}";
+        }
+    }
+
+    private Scheduler commandQueue = new Scheduler();
+    private ServerThreadMode mode = new NormalMode();
+
+    public ServerThread(){
+        threadId = idCounter;
+        Interlocked.Increment(ref idCounter);
+        Thread serverThread = new Thread(() => {
+            while(mode.GetCondition()){
+                ICommand command = commandQueue.Select();
+                command.Execute();
+                if(command is ILongCommand && !((ILongCommand)command).IsDone())
+                {
+                    commandQueue.AddLongCommand((ILongCommand)command);
+                }
+            }
+            IsDone = true;
+        });
+
+        serverThread.Name = this.Name;
+        serverThread.Start();
+    }
+
+    public void AddCommand(ICommand command){
+        commandQueue.Add(command);
+    }
+    
+    interface ServerThreadMode{
+        bool GetCondition();
+    }
+
+    class NormalMode : ServerThreadMode{
+        public bool GetCondition(){
+            return true;
+        }
+    }
+
+    class HardStoppingMode : ServerThreadMode{
+        public bool GetCondition(){
+            return false;
+        }
+    }
+
+    class SoftStoppingMode : ServerThreadMode{
+        int countOfCommands;
+        public SoftStoppingMode(ServerThread serverThread){
+            countOfCommands = serverThread.commandQueue.Count;
+        }
+
+        public bool GetCondition(){
+            if(countOfCommands == 0) 
+            {
+                return false;
+            }
+            else 
+            {
+                countOfCommands--;
+                return true;
+            }
+        }
+    }
+
+    public class HardStop : ICommand{
+        ServerThread targetThread;
+
+
+        public HardStop(ServerThread serverThread){
+            this.targetThread = serverThread;
+        }
+
+        public void Execute(){
+            if(Thread.CurrentThread.Name != targetThread.Name)
+                throw new Exception("Выполнение команды не в целевом потоке");
+            targetThread.mode = new HardStoppingMode();
+        }
+    }
+
+    public class SoftStop : ICommand{
+        ServerThread targetThread;
+
+
+        public SoftStop(ServerThread serverThread){
+            this.targetThread = serverThread;
+        }
+
+        public void Execute(){
+            if(Thread.CurrentThread.Name != targetThread.Name)
+                throw new Exception("Выполнение команды не в целевом потоке");
+            targetThread.mode = new SoftStoppingMode(targetThread);
+        }
+    }
+
+    
+    
+}
+
+#!markdown
+
+Теперь определим обёртку для нашей длительной команды
+
+#!csharp
+
+class InfinityLongCommand : ILongCommand{
+    ICommand command;
+    
+    public InfinityLongCommand(ICommand command){
+        this.command = command;
+    }
+
+    public void Execute() => command.Execute();
+
+    public bool IsDone() => false;
+
+}
+
+#!markdown
+
+Выполним задачу
+
+#!csharp
+
+var testCommand1 = new TestCommand(1);
+var testCommand2 = new TestCommand(2);
+var testCommand3 = new TestCommand(3);
+var testCommand4 = new TestCommand(4);
+var testCommand5 = new TestCommand(5);
+
+var longCommand1 = new InfinityLongCommand(testCommand1);
+var longCommand2 = new InfinityLongCommand(testCommand2);
+var longCommand3 = new InfinityLongCommand(testCommand3);
+var longCommand4 = new InfinityLongCommand(testCommand4);
+var longCommand5 = new InfinityLongCommand(testCommand5);
+
+ServerThread thread = new ServerThread();
+
+thread.AddCommand(longCommand1);
+thread.AddCommand(longCommand2);
+thread.AddCommand(longCommand3);
+thread.AddCommand(longCommand4);
+thread.AddCommand(longCommand5);
+
+while(true){
+    Thread.Sleep(100);
+    if(
+        testCommand1.counter >= 3
+        && testCommand2.counter >= 3
+        && testCommand3.counter >= 3
+        && testCommand4.counter >= 3
+        && testCommand5.counter >= 3
+    ){
+        Console.WriteLine("Все задачи выполнились как минимум по три раза");
+        break;
+    }
+}
+
+thread.AddCommand(new ServerThread.HardStop(thread));
+
+Thread.Sleep(100);
+
+thread.IsDone
